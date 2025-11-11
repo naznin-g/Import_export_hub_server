@@ -72,21 +72,157 @@ async function run() {
 
     const usersCollection = db.collection('users');
     const productsCollection = db.collection('products');
-    const importsCollection = db.collection('import');
+    const importsCollection = db.collection('imports');
+    
+    await productsCollection.createIndex({ name: "text" });
 
-    // ---------------- USERS API ----------------
+
+    //  USERS API 
     app.post('/users', async (req, res) => {
-      const newUser = req.body;
-      const email = newUser.email;
-      const existingUser = await usersCollection.findOne({ email });
+  const { name, email, photoURL, role } = req.body;
+  if (!email) return res.status(400).send({ message: 'Email required' });
 
-      if (existingUser) {
-        return res.send({ message: 'User already exists.' });
-      }
+  const existingUser = await usersCollection.findOne({ email });
+  if (existingUser) return res.status(409).send({ message: 'User already exists' });
 
-      const result = await usersCollection.insertOne(newUser);
-      res.send(result);
-    });
+    const newUser = {
+    name,
+    email,
+    photoURL: photoURL || '',
+    role: role || 'importer', // default role
+    createdAt: new Date()
+  };
+
+  const result = await usersCollection.insertOne(newUser);
+  res.status(201).send({ message: 'User created', insertedId: result.insertedId });
+});
+
+app.get('/users/:email', async (req, res) => {
+  const email = req.params.email;
+  if (!email) return res.status(400).send({ message: 'Email is required' });
+
+  const user = await usersCollection.findOne({ email });
+  if (!user) return res.status(404).send({ message: 'User not found' });
+
+  res.send(user);
+});
+
+app.patch('/users/:email', async (req, res) => {
+  const email = req.params.email;
+  const { name, photoURL, role } = req.body;
+
+  const updateFields = {};
+  if (name) updateFields.name = name;
+  if (photoURL) updateFields.photoURL = photoURL;
+  if (role) updateFields.role = role;
+
+  const result = await usersCollection.updateOne(
+    { email },
+    { $set: updateFields }
+  );
+
+  if (result.matchedCount === 0) return res.status(404).send({ message: 'User not found' });
+
+  res.send({ message: 'User updated', modifiedCount: result.modifiedCount });
+});
+//product apis
+/* ===============================
+   🛍️ PRODUCTS APIs
+================================*/
+
+// 1️⃣ Get all products (with optional search by name)
+app.get('/products', async (req, res) => {
+  const search = (req.query.search || '').trim();
+  const page = Math.max(parseInt(req.query.page) || 1, 1);
+  const limit = Math.max(parseInt(req.query.limit) || 12, 1);
+  const skip = (page - 1) * limit;
+
+  const query = search ? { name: { $regex: search, $options: 'i' } } : {};
+
+  const products = await productsCollection.find(query)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .toArray();
+  const total = await productsCollection.countDocuments(query);
+
+  res.send({ data: products, total, page, limit });
+});
+
+// 2️⃣ Get latest 6 products
+app.get('/latest-products', async (req, res) => {
+  const latest = await productsCollection.find()
+    .sort({ createdAt: -1 })
+    .limit(6)
+    .toArray();
+  res.send(latest);
+});
+
+// 3️⃣ Get a single product by ID
+app.get('/products/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
+
+  const product = await productsCollection.findOne({ _id: new ObjectId(id) });
+  if (!product) return res.status(404).send({ message: 'Product not found' });
+
+  res.send(product);
+});
+
+// 4️⃣ Add new product (exporter only)
+app.post('/products', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const { name, price, originCountry, rating, availableQuantity, image } = req.body;
+
+  if (!name || !price || !availableQuantity) {
+    return res.status(400).send({ message: 'Name, price, and available quantity are required' });
+  }
+
+  const newProduct = {
+    name,
+    price,
+    originCountry: originCountry || '',
+    rating: rating || 0,
+    availableQuantity,
+    image: image || '',
+    addedBy: req.token_email,
+    createdAt: new Date()
+  };
+
+  const result = await productsCollection.insertOne(newProduct);
+  res.status(201).send({ message: 'Product added', insertedId: result.insertedId });
+});
+
+// 5️⃣ Update product (exporter only, can only update own product)
+app.patch('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
+
+  const updateFields = req.body;
+  const result = await productsCollection.updateOne(
+    { _id: new ObjectId(id), addedBy: req.token_email },
+    { $set: updateFields }
+  );
+
+  if (result.matchedCount === 0) return res.status(403).send({ message: 'Not allowed or product not found' });
+  res.send({ message: 'Product updated', modifiedCount: result.modifiedCount });
+});
+
+// 6️⃣ Delete product (exporter only, can only delete own product)
+app.delete('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
+
+  const result = await productsCollection.deleteOne({ _id: new ObjectId(id), addedBy: req.token_email });
+  if (result.deletedCount === 0) return res.status(403).send({ message: 'Not allowed or product not found' });
+
+  res.send({ message: 'Product deleted', deletedCount: result.deletedCount });
+});
+
+
+
+
+
+//find user
 
     // ---------------- PRODUCTS API ----------------
     app.get('/products', async (req, res) => {
