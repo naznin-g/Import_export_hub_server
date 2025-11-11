@@ -220,6 +220,90 @@ app.delete('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCol
 
 
 
+/* ===============================
+   📥 IMPORTS APIs (importer only)
+================================*/
+
+// 1️⃣ Import a product (reduce stock)
+app.post('/imports', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+  const { productId, quantity } = req.body;
+
+  if (!productId || !quantity || quantity <= 0) {
+    return res.status(400).send({ message: 'Product ID and valid quantity required' });
+  }
+
+  const prodObjectId = new ObjectId(productId);
+
+  // Atomically check stock and reduce quantity
+  const product = await productsCollection.findOneAndUpdate(
+    { _id: prodObjectId, availableQuantity: { $gte: quantity } },
+    { $inc: { availableQuantity: -quantity } },
+    { returnDocument: 'after' }
+  );
+
+  if (!product.value) {
+    return res.status(400).send({ message: 'Quantity exceeds available stock' });
+  }
+
+  // Save import record
+  const importRecord = {
+    productId: prodObjectId,
+    importedBy: req.token_email,
+    quantity,
+    createdAt: new Date()
+  };
+
+  const result = await importsCollection.insertOne(importRecord);
+
+  res.status(201).send({
+    message: 'Product imported successfully',
+    importId: result.insertedId,
+    remainingStock: product.value.availableQuantity
+  });
+});
+
+// 2️⃣ Get all imports of the logged-in user
+app.get('/my-imports', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+  const imports = await importsCollection.aggregate([
+    { $match: { importedBy: req.token_email } },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'productId',
+        foreignField: '_id',
+        as: 'productDetails'
+      }
+    },
+    { $unwind: '$productDetails' }
+  ]).toArray();
+
+  res.send(imports);
+});
+
+// 3️⃣ Delete an import (restore stock)
+app.delete('/my-imports/:id', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+  const importId = req.params.id;
+  if (!ObjectId.isValid(importId)) return res.status(400).send({ message: 'Invalid import ID' });
+
+  // Find and delete the import
+  const deleted = await importsCollection.findOneAndDelete({
+    _id: new ObjectId(importId),
+    importedBy: req.token_email
+  });
+
+  if (!deleted.value) return res.status(404).send({ message: 'Import record not found' });
+
+  // Restore product stock
+  await productsCollection.updateOne(
+    { _id: deleted.value.productId },
+    { $inc: { availableQuantity: deleted.value.quantity } }
+  );
+
+  res.send({ message: 'Import deleted and stock restored', importId });
+});
+gi
+
+
 
 
 //find user
