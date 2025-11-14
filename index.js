@@ -5,7 +5,7 @@ const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require('firebase-admin');
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 // Firebase Admin Setup
 const serviceAccount = require("./import-export-hub-firebase-admin-key.json");
@@ -170,7 +170,7 @@ app.get('/products/:id', async (req, res) => {
 });
 
 // 4️⃣ Add new product (exporter only)
-app.post('/products', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+app.post('/products', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
   const { name, price, originCountry, rating, availableQuantity, image } = req.body;
 
   if (!name || !price || !availableQuantity) {
@@ -193,7 +193,7 @@ app.post('/products', verifyFirebaseToken, verifyRole('exporter', usersCollectio
 });
 
 // 5️⃣ Update product (exporter only, can only update own product)
-app.patch('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+app.patch('/products/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
   const id = req.params.id;
   if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
 
@@ -208,7 +208,7 @@ app.patch('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersColl
 });
 
 // 6️⃣ Delete product (exporter only, can only delete own product)
-app.delete('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+app.delete('/products/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
   const id = req.params.id;
   if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
 
@@ -225,7 +225,7 @@ app.delete('/products/:id', verifyFirebaseToken, verifyRole('exporter', usersCol
 ================================*/
 
 // 1️⃣ Import a product (reduce stock)
-app.post('/imports', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+app.post('/imports', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
   const { productId, quantity } = req.body;
 
   if (!productId || !quantity || quantity <= 0) {
@@ -263,7 +263,7 @@ app.post('/imports', verifyFirebaseToken, verifyRole('importer', usersCollection
 });
 
 // 2️⃣ Get all imports of the logged-in user
-app.get('/my-imports', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+app.get('/my-imports', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
   const imports = await importsCollection.aggregate([
     { $match: { importedBy: req.token_email } },
     {
@@ -281,7 +281,7 @@ app.get('/my-imports', verifyFirebaseToken, verifyRole('importer', usersCollecti
 });
 
 // 3️⃣ Delete an import (restore stock)
-app.delete('/my-imports/:id', verifyFirebaseToken, verifyRole('importer', usersCollection), async (req, res) => {
+app.delete('/my-imports/:id', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
   const importId = req.params.id;
   if (!ObjectId.isValid(importId)) return res.status(400).send({ message: 'Invalid import ID' });
 
@@ -301,87 +301,61 @@ app.delete('/my-imports/:id', verifyFirebaseToken, verifyRole('importer', usersC
 
   res.send({ message: 'Import deleted and stock restored', importId });
 });
-gi
 
 
 
+/* ===============================
+   📤 MY EXPORTS APIs (exporter only)
+================================*/
 
-//find user
+// 1️⃣ Get all exports of the logged-in user
+app.get('/my-exports', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const exports = await productsCollection
+    .find({ addedBy: req.token_email })
+    .sort({ createdAt: -1 })
+    .toArray();
 
-    // ---------------- PRODUCTS API ----------------
-    app.get('/products', async (req, res) => {
-      const email = req.query.email;
-      const query = email ? { email } : {};
-      const products = await productsCollection.find(query).toArray();
-      res.send(products);
-    });
+  res.send(exports);
+});
 
-    app.get('/latest-products', async (req, res) => {
-      const products = await productsCollection.find().sort({ created_at: -1 }).limit(6).toArray();
-      res.send(products);
-    });
+// 2️⃣ Update a product (exporter only, own product)
+app.patch('/my-exports/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
 
-    app.get('/products/:id', async (req, res) => {
-      const id = req.params.id;
-      const product = await productsCollection.findOne({ _id: new ObjectId(id) });
-      res.send(product);
-    });
+  const updateFields = req.body;
 
-    app.post('/products', verifyFireBaseToken, async (req, res) => {
-      const newProduct = req.body;
-      const result = await productsCollection.insertOne(newProduct);
-      res.send(result);
-    });
+  const result = await productsCollection.updateOne(
+    { _id: new ObjectId(id), addedBy: req.token_email },
+    { $set: updateFields }
+  );
 
-    app.patch('/products/:id', async (req, res) => {
-      const id = req.params.id;
-      const updateData = req.body;
-      const result = await productsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateData }
-      );
-      res.send(result);
-    });
+  if (result.matchedCount === 0) {
+    return res.status(403).send({ message: 'Not allowed or product not found' });
+  }
 
-    app.delete('/products/:id', async (req, res) => {
-      const id = req.params.id;
-      const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
-    });
+  res.send({ message: 'Product updated', modifiedCount: result.modifiedCount });
+});
 
-    // ---------------- BIDS API ----------------
-    // Get authenticated user bids
-    app.get('/bids/my', verifyFireBaseToken, async (req, res) => {
-      const email = req.query.email;
-      if (email && email !== req.token_email) {
-        return res.status(403).send({ message: 'Forbidden access' });
-      }
-      const query = email ? { buyer_email: email } : {};
-      const bids = await bidsCollection.find(query).toArray();
-      res.send(bids);
-    });
+// 3️⃣ Delete a product (exporter only, own product)
+app.delete('/my-exports/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
 
-    // Get all bids for a product sorted by price
-    app.get('/products/bids/:productId', async (req, res) => {
-      const productId = req.params.productId;
-      const bids = await bidsCollection.find({ product: productId }).sort({ bid_price: -1 }).toArray();
-      res.send(bids);
-    });
+  const result = await productsCollection.deleteOne({
+    _id: new ObjectId(id),
+    addedBy: req.token_email
+  });
 
-    // Create a bid
-    app.post('/bids', async (req, res) => {
-      const newBid = req.body;
-      const result = await bidsCollection.insertOne(newBid);
-      res.send(result);
-    });
+  if (result.deletedCount === 0) {
+    return res.status(403).send({ message: 'Not allowed or product not found' });
+  }
 
-    // Delete a bid
-    app.delete('/bids/:id', async (req, res) => {
-      const id = req.params.id;
-      const result = await bidsCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
-    });
+  res.send({ message: 'Product deleted', deletedCount: result.deletedCount });
+});
+ 
 
+    
     console.log('✅ MongoDB connected and APIs are ready');
   } catch (error) {
     console.error('❌ Error connecting to MongoDB:', error);
