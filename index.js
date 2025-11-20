@@ -1,15 +1,14 @@
-// index.js
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require('firebase-admin');
+
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Firebase Admin Setup
+// Initialize Firebase Admin
 const serviceAccount = require("./import-export-hub-firebase-admin-key.json");
-
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
@@ -18,353 +17,351 @@ admin.initializeApp({
 app.use(cors());
 app.use(express.json());
 
-// Firebase Token Verification Middleware
-const verifyFireBaseToken = async (req, res, next) => {
-  const authorization = req.headers.authorization;
-  if (!authorization) {
-    return res.status(401).send({ message: 'unauthorized access' });
-  }
+// MongoDB setup
+const client = new MongoClient(process.env.MONGO_URI);
 
-  const token = authorization.split(' ')[1];
-
-  try {
-    const decoded = await admin.auth().verifyIdToken(token);
-    console.log('Inside token',decoded)
-    req.token_email = decoded.email;
-    next();
-  } catch (error) {
-    return res.status(401).send({ message: 'unauthorized access' });
-  }
-};
-
-const verifyRole = (requiredRole, usersCollection) => {
-  return async (req, res, next) => {
-    try {
-      const user = await usersCollection.findOne({ email: req.token_email });
-      if (!user) return res.status(403).send({ message: 'User not found' });
-      if (user.role !== requiredRole) return res.status(403).send({ message: 'Access denied' });
-      req.user = user; // attach user object if needed
-      next();
-    } catch (err) { next(err); }
-  };
-};
-
-// MongoDB Connection
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@${process.env.DB_CLUSTER}/?appName=Cluster0`;
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true
-  }
-});
-
-// Test route
-app.get('/', (req, res) => {
-  res.send('Smart server is running');
-});
-//db_pass: ZiKatLs143mzR6zm
-//db_user:importExportHub
 async function run() {
   try {
     await client.connect();
     const db = client.db(process.env.DB_NAME);
+    const usersCollection = db.collection("users");
+    const productsCollection = db.collection("products");
+    const importsCollection = db.collection("imports");
 
-    const usersCollection = db.collection('users');
-    const productsCollection = db.collection('products');
-    const importsCollection = db.collection('imports');
-    
-    await productsCollection.createIndex({ name: "text" });
+    console.log("✅ MongoDB connected");
 
+    // -------------------------------
+    // Middleware: Verify Firebase Token
+    // -------------------------------
+    const verifyFirebaseToken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader) return res.status(401).send({ message: "Unauthorized access" });
 
-    //  USERS API 
-    app.post('/users', async (req, res) => {
-  const { name, email, photoURL, role } = req.body;
-  if (!email) return res.status(400).send({ message: 'Email required' });
+      const token = authHeader.split(" ")[1];
 
-  const existingUser = await usersCollection.findOne({ email });
-  if (existingUser) return res.status(409).send({ message: 'User already exists' });
-
-    const newUser = {
-    name,
-    email,
-    photoURL: photoURL || '',
-    role: role || 'importer', // default role
-    createdAt: new Date()
-  };
-
-  const result = await usersCollection.insertOne(newUser);
-  res.status(201).send({ message: 'User created', insertedId: result.insertedId });
-});
-
-app.get('/users/:email', async (req, res) => {
-  const email = req.params.email;
-  if (!email) return res.status(400).send({ message: 'Email is required' });
-
-  const user = await usersCollection.findOne({ email });
-  if (!user) return res.status(404).send({ message: 'User not found' });
-
-  res.send(user);
-});
-
-app.patch('/users/:email', async (req, res) => {
-  const email = req.params.email;
-  const { name, photoURL, role } = req.body;
-
-  const updateFields = {};
-  if (name) updateFields.name = name;
-  if (photoURL) updateFields.photoURL = photoURL;
-  if (role) updateFields.role = role;
-
-  const result = await usersCollection.updateOne(
-    { email },
-    { $set: updateFields }
-  );
-
-  if (result.matchedCount === 0) return res.status(404).send({ message: 'User not found' });
-
-  res.send({ message: 'User updated', modifiedCount: result.modifiedCount });
-});
-//product apis
-/* ===============================
-   🛍️ PRODUCTS APIs
-================================*/
-
-// 1️⃣ Get all products (with optional search by name)
-app.get('/products', async (req, res) => {
-  const search = (req.query.search || '').trim();
-  const page = Math.max(parseInt(req.query.page) || 1, 1);
-  const limit = Math.max(parseInt(req.query.limit) || 12, 1);
-  const skip = (page - 1) * limit;
-
-  const query = search ? { name: { $regex: search, $options: 'i' } } : {};
-
-  const products = await productsCollection.find(query)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .toArray();
-  const total = await productsCollection.countDocuments(query);
-
-  res.send({ data: products, total, page, limit });
-});
-
-// 2️⃣ Get latest 6 products
-app.get('/latest-products', async (req, res) => {
-  const latest = await productsCollection.find()
-    .sort({ createdAt: -1 })
-    .limit(6)
-    .toArray();
-  res.send(latest);
-});
-
-// 3️⃣ Get a single product by ID
-app.get('/products/:id', async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
-
-  const product = await productsCollection.findOne({ _id: new ObjectId(id) });
-  if (!product) return res.status(404).send({ message: 'Product not found' });
-
-  res.send(product);
-});
-
-// 4️⃣ Add new product (exporter only)
-app.post('/products', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const { name, price, originCountry, rating, availableQuantity, image } = req.body;
-
-  if (!name || !price || !availableQuantity) {
-    return res.status(400).send({ message: 'Name, price, and available quantity are required' });
-  }
-
-  const newProduct = {
-    name,
-    price,
-    originCountry: originCountry || '',
-    rating: rating || 0,
-    availableQuantity,
-    image: image || '',
-    addedBy: req.token_email,
-    createdAt: new Date()
-  };
-
-  const result = await productsCollection.insertOne(newProduct);
-  res.status(201).send({ message: 'Product added', insertedId: result.insertedId });
-});
-
-// 5️⃣ Update product (exporter only, can only update own product)
-app.patch('/products/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
-
-  const updateFields = req.body;
-  const result = await productsCollection.updateOne(
-    { _id: new ObjectId(id), addedBy: req.token_email },
-    { $set: updateFields }
-  );
-
-  if (result.matchedCount === 0) return res.status(403).send({ message: 'Not allowed or product not found' });
-  res.send({ message: 'Product updated', modifiedCount: result.modifiedCount });
-});
-
-// 6️⃣ Delete product (exporter only, can only delete own product)
-app.delete('/products/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
-
-  const result = await productsCollection.deleteOne({ _id: new ObjectId(id), addedBy: req.token_email });
-  if (result.deletedCount === 0) return res.status(403).send({ message: 'Not allowed or product not found' });
-
-  res.send({ message: 'Product deleted', deletedCount: result.deletedCount });
-});
-
-
-
-/* ===============================
-   📥 IMPORTS APIs (importer only)
-================================*/
-
-// 1️⃣ Import a product (reduce stock)
-app.post('/imports', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
-  const { productId, quantity } = req.body;
-
-  if (!productId || !quantity || quantity <= 0) {
-    return res.status(400).send({ message: 'Product ID and valid quantity required' });
-  }
-
-  const prodObjectId = new ObjectId(productId);
-
-  // Atomically check stock and reduce quantity
-  const product = await productsCollection.findOneAndUpdate(
-    { _id: prodObjectId, availableQuantity: { $gte: quantity } },
-    { $inc: { availableQuantity: -quantity } },
-    { returnDocument: 'after' }
-  );
-
-  if (!product.value) {
-    return res.status(400).send({ message: 'Quantity exceeds available stock' });
-  }
-
-  // Save import record
-  const importRecord = {
-    productId: prodObjectId,
-    importedBy: req.token_email,
-    quantity,
-    createdAt: new Date()
-  };
-
-  const result = await importsCollection.insertOne(importRecord);
-
-  res.status(201).send({
-    message: 'Product imported successfully',
-    importId: result.insertedId,
-    remainingStock: product.value.availableQuantity
-  });
-});
-
-// 2️⃣ Get all imports of the logged-in user
-app.get('/my-imports', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
-  const imports = await importsCollection.aggregate([
-    { $match: { importedBy: req.token_email } },
-    {
-      $lookup: {
-        from: 'products',
-        localField: 'productId',
-        foreignField: '_id',
-        as: 'productDetails'
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.firebaseUid = decoded.uid;
+        req.userEmail = decoded.email; // use this for imports/exports
+        next();
+      } catch (err) {
+        console.error(err);
+        res.status(401).send({ message: "Unauthorized Access" });
       }
-    },
-    { $unwind: '$productDetails' }
-  ]).toArray();
+    };
 
-  res.send(imports);
-});
+    // -------------------------------
+    // USERS API
+    // -------------------------------
 
-// 3️⃣ Delete an import (restore stock)
-app.delete('/my-imports/:id', verifyFireBaseToken, verifyRole('importer', usersCollection), async (req, res) => {
-  const importId = req.params.id;
-  if (!ObjectId.isValid(importId)) return res.status(400).send({ message: 'Invalid import ID' });
+    // Add/Register a new user
+    app.post('/users', async (req, res) => {
+      const newUser = req.body;
+      const email = newUser.email;
 
-  // Find and delete the import
-  const deleted = await importsCollection.findOneAndDelete({
-    _id: new ObjectId(importId),
-    importedBy: req.token_email
-  });
+      const existingUser = await usersCollection.findOne({ email });
+      if (existingUser) {
+        return res.send({ message: 'User already exists. No need to insert again' });
+      }
 
-  if (!deleted.value) return res.status(404).send({ message: 'Import record not found' });
-
-  // Restore product stock
-  await productsCollection.updateOne(
-    { _id: deleted.value.productId },
-    { $inc: { availableQuantity: deleted.value.quantity } }
-  );
-
-  res.send({ message: 'Import deleted and stock restored', importId });
-});
+      const result = await usersCollection.insertOne(newUser);
+      res.send(result);
+    });
 
 
-
-/* ===============================
-   📤 MY EXPORTS APIs (exporter only)
-================================*/
-
-// 1️⃣ Get all exports of the logged-in user
-app.get('/my-exports', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const exports = await productsCollection
-    .find({ addedBy: req.token_email })
-    .sort({ createdAt: -1 })
-    .toArray();
-
-  res.send(exports);
-});
-
-// 2️⃣ Update a product (exporter only, own product)
-app.patch('/my-exports/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
-
-  const updateFields = req.body;
-
-  const result = await productsCollection.updateOne(
-    { _id: new ObjectId(id), addedBy: req.token_email },
-    { $set: updateFields }
-  );
-
-  if (result.matchedCount === 0) {
-    return res.status(403).send({ message: 'Not allowed or product not found' });
-  }
-
-  res.send({ message: 'Product updated', modifiedCount: result.modifiedCount });
-});
-
-// 3️⃣ Delete a product (exporter only, own product)
-app.delete('/my-exports/:id', verifyFireBaseToken, verifyRole('exporter', usersCollection), async (req, res) => {
-  const id = req.params.id;
-  if (!ObjectId.isValid(id)) return res.status(400).send({ message: 'Invalid product ID' });
-
-  const result = await productsCollection.deleteOne({
-    _id: new ObjectId(id),
-    addedBy: req.token_email
-  });
-
-  if (result.deletedCount === 0) {
-    return res.status(403).send({ message: 'Not allowed or product not found' });
-  }
-
-  res.send({ message: 'Product deleted', deletedCount: result.deletedCount });
-});
- 
+    //latest 6 product
+    app.get('/latest-products', async (req, res) => {
+    
+    const products = await productsCollection
+        .find()
+        .sort({ createdAt: -1 }) // newest first
+        .limit(6)
+        .toArray();
 
     
-    console.log('✅ MongoDB connected and APIs are ready');
-  } catch (error) {
-    console.error('❌ Error connecting to MongoDB:', error);
+    const latestProducts = products.map(product => ({
+        _id: product._id,
+        image: product.image,
+        name: product.name,
+        price: product.price,
+        originCountry: product.originCountry,
+        rating: product.rating,
+        availableQuantity: product.availableQuantity
+    }));
+
+    res.send(latestProducts);
+});
+
+    //All Product
+    app.get('/products', async (req, res) => {
+    const search = (req.query.search || "").trim(); // optional search by product name
+    const query = search ? { name: { $regex: search, $options: "i" } } : {};
+
+    const products = await productsCollection
+        .find(query)
+        .sort({ createdAt: -1 }) 
+        .toArray();
+
+    
+    const result = products.map(product => ({
+        _id: product._id,
+        image: product.image,
+        name: product.name,
+        price: product.price,
+        originCountry: product.originCountry,
+        rating: product.rating,
+        availableQuantity: product.availableQuantity
+    }));
+
+    res.send(result);
+});
+
+    //Add product/Export product/products added by user /Exporter
+    app.post('/products', verifyFirebaseToken,async(req, res)=>{
+      const product=req.body;
+      product.exporterEmail=req.userEmail;
+      product.created_at=new Date();
+      const result=await productsCollection.insertOne(product);
+      res.send(result);
+    });
+
+    app.get("/product/:id", async (req, res) => {
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const result = await productsCollection.findOne(query);
+    res.send(result);
+});
+
+    //Deleting a product by the exporter/user who added /created the product
+    app.delete('/product/:id',verifyFirebaseToken, async(req, res)=>{
+      const productId=req.params.id;
+      const result=await productsCollection.deleteOne({_id:new ObjectId(productId)});
+      exporterEmail=req.userEmail;
+      res.send(result);
+    });
+    //Update products(by exporter and importer
+    app.patch('/product/:id', verifyFirebaseToken, async (req, res) => {
+  const productId = req.params.id;
+  const { price, quantityChange } = req.body; 
+
+  const updateFields={};
+  if (price !== undefined) updateFields.price=price;
+
+  if (typeof quantityChange === "number" && quantityChange !== 0) {
+    updateFields.availableQuantity=quantityChange;
   }
+
+  if (Object.keys(updateFields).length === 0) {
+    return res.status(400).send({ message: "Nothing to update" });
+  }  
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(productId) },
+      { $inc: { availableQuantity: quantityChange } }
+    );
+
+    res.send(result);
+  
+});
+
+
+
+    //list of importers of a specific product
+    app.get('/product/:id/imports', async(req, res)=>{
+      const productId=req.params.id;
+      const importCursor=importsCollection.find({productId:productId}).sort({importedAt:-1});
+      const imports=await importCursor.toArray();
+      const importers=imports.map((imp)=>({
+        importerEmail:imp.importerEmail,
+        importedQuantity:imp.importedQuantity,
+        importedAt:imp.importedAt
+      }));
+      res.send(importers);
+    });
+
+
+app.post('/product/:id/imports', verifyFirebaseToken, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const { quantity } = req.body;
+    const importerEmail = req.userEmail;
+
+    // Find product
+    const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
+
+    if (!product) {
+      return res.status(404).send({ message: "Product not found" });
+    }
+    if (product.exporterEmail===importerEmail){
+      return res.status(400).send({ message: "Exporters cannot import their own products" });
+
+}
+    
+      //return()
+
+    if (quantity > product.availableQuantity) {
+      return res.status(400).send({ message: "Not enough stock" });
+    }
+
+    // Create import record
+    const newImport = {
+      productId,
+      importerEmail,
+      importedQuantity: quantity,
+      importedAt: new Date(),
+    };
+
+    await importsCollection.insertOne(newImport);
+
+    // Update stock
+    const newStock = product.availableQuantity - quantity;
+
+    await productsCollection.updateOne(
+      { _id: new ObjectId(productId) },
+      { $set: { availableQuantity: newStock } }
+    );
+
+    res.send({
+      message: "Imported successfully",
+      remainingStock: newStock,
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error during import" });
+  }
+});
+
+
+
+
+//
+//
+//app.post("/imports", verifyFirebaseToken, async (req, res) => {
+//  const { productId, quantity } = req.body;
+//  const importerEmail = req.user.email;
+//  const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
+//  if (quantity > product.availableQuantity) {
+//    return res.status(400).send({ message: "Import quantity exceeds available quantity" });
+//  }
+//
+//  
+//  const newImport = {
+//    productId,
+//    importerEmail,
+//    quantity,
+//    date: new Date(),
+//  };
+//  await importsCollection.insertOne(newImport);
+//
+//  
+//  await productsCollection.updateOne(
+//    { _id: new ObjectId(productId) },
+//    { $inc: { availableQuantity: -quantity } }
+//  );
+//
+//  res.send({ message: "Product imported successfully" });
+//});
+//
+//
+//
+//
+
+    //imported product list of a specific importer
+    app.get('/my-imports', verifyFirebaseToken, async (req, res) => {
+  const userEmail = req.userEmail;
+
+  const imports = await importsCollection
+    .find({ importerEmail: userEmail })
+    .toArray();
+    console.log(imports);
+
+  // Group imports by productId
+  const grouped = {};
+  for (const imp of imports) {
+    if (!grouped[imp.productId]) {
+      grouped[imp.productId] = { totalQuantity: 0, lastImportedAt: imp.importedAt };
+    }
+    grouped[imp.productId].totalQuantity += imp.importedQuantity;
+    if (imp.importedAt > grouped[imp.productId].lastImportedAt) {
+      grouped[imp.productId].lastImportedAt = imp.importedAt;
+    }
+  }
+
+  const result = await Promise.all(
+    Object.keys(grouped).map(async (productId) => {
+      const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
+      if (!product) return null;
+      return {
+        _id: product._id,
+        image: product.image || "https://via.placeholder.com/150",
+        name: product.name,
+        price: product.price,
+        rating: product.rating,
+        originCountry: product.originCountry,
+        totalImportedQuantity: grouped[productId].totalQuantity,
+        lastImportedAt: grouped[productId].lastImportedAt,
+      };
+    })
+  );
+
+  res.send(result.filter(p => p !== null));
+});
+
+
+//remove a imported product from a users import list
+app.delete('/my-imports/:id', async (req, res) => {
+  const id = req.params.id;
+  const userEmail=req.userEmail
+  const query = { productId:id,
+    impoterEmail:userEmail
+   };
+  const result = await importsCollection.deleteMany(query);
+
+  res.send({ deleted: result.deletedCount > 0 });
+});
+
+
+app.get('/my-exports', verifyFirebaseToken, async (req, res) => {
+  const exporterEmail = req.userEmail; // comes from verifyFirebaseToken
+  const myProducts = await productsCollection
+    .find({ exporterEmail })
+    .sort({ created_at: -1 })
+    .toArray();
+
+  res.send(myProducts);
+});
+    
+
+
+
+
+     console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
+
+
+
+    }
+    finally {
+
+    }
 }
 
-run().catch(console.dir);
+run().catch(console.dir)
 
-// Start the server
 app.listen(port, () => {
-  console.log(`Server running on port: ${port}`);
-});
+    console.log(`Smart server is running on port: ${port}`)
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
