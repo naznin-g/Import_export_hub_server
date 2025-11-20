@@ -1,3 +1,5 @@
 node_modules/
 .env
 import-export-hub-firebase-admin-key.json
+
+.vercel
