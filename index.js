@@ -9,8 +9,9 @@ const port = process.env.PORT || 5000;
 
 // Initialize Firebase Admin
 const admin=require("firebase-admin");
-const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
-serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+const decoded=Buffer.from(process.env.FIREBASE_ADMIN_KEY,"base64").toString("utf8");
+const serviceAccount = JSON.parse(decoded);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
@@ -18,6 +19,9 @@ admin.initializeApp({
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.get('/', (req, res) => {
+  res.send('Smart Import Export Hub Server is running!');
+});
 
 // MongoDB setup
 const client = new MongoClient(process.env.MONGO_URI);
