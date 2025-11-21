@@ -2,13 +2,15 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const admin = require('firebase-admin');
+
 
 const app = express();
 const port = process.env.PORT || 5000;
 
 // Initialize Firebase Admin
-const serviceAccount = require("./import-export-hub-firebase-admin-key.json");
+const admin=require("firebase-admin");
+const serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
+serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
