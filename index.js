@@ -42,17 +42,17 @@ async function run() {
       try {
         const decoded = await admin.auth().verifyIdToken(token);
         req.firebaseUid = decoded.uid;
-        req.userEmail = decoded.email; // use this for imports/exports
+        req.userEmail = decoded.email; 
         next();
       } catch (err) {
-        console.error(err);
+        //console.error(err);
         res.status(401).send({ message: "Unauthorized Access" });
       }
     };
 
-    // -------------------------------
+    
     // USERS API
-    // -------------------------------
+    
 
     // Add/Register a new user
     app.post('/users', async (req, res) => {
