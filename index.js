@@ -319,7 +319,7 @@ app.delete('/my-imports/:id', async (req, res) => {
   const id = req.params.id;
   const userEmail=req.userEmail
   const query = { productId:id,
-    impoterEmail:userEmail
+    importerEmail:userEmail
    };
   const result = await importsCollection.deleteMany(query);
 
